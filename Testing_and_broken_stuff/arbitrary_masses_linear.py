@@ -4,7 +4,7 @@
 import pdb
 import numpy as np
 import matplotlib.pyplot as plt
-# from matplotlib.backends import _macosx
+from matplotlib.backends import _macosx
 from scipy.integrate import odeint
 import numpy.random as rng
 
@@ -12,7 +12,7 @@ import numpy.random as rng
 #np.random.seed(12345)
 
 # set number of masses here:
-num_m = 5
+num_m = 6
 mass_mult = 10
 
 # number of springs and dampers and forces are based on the number of masses:
