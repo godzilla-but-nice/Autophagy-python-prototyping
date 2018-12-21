@@ -3,9 +3,9 @@ from scipy.integrate import odeint
 from scipy.spatial import distance_matrix
 import pdb
 
-class ThreeDimMSM:
+class TwoDimMSM:
     """
-    This class contains functions for solving n-dimensional mass-spring systems.
+    This class contains functions for solving 2d mass-spring systems.
     It will determine which masses are interacting based on proximity,
     set up coeffienct matrices for springs and dampers, and use them to
     evaluate the ODEs
@@ -13,25 +13,22 @@ class ThreeDimMSM:
     Parameters:
     -----------
     dat = 2d array of floats
-        mass# by x, y, z position, describes the masses
+        #mass x (radius, x position, y position) describes the masses
     starts = 1d array of floats
-        [:pos.shape[0]]                    starting x positions
-        [pos.shape[0]:2*pos.shape[0]]      starting y positions
-        [2*pos.shape[0]:3*pos.shape[0]]    starting z positions
-        [3*pos.shape[0]:4*pos.shape[0]]    starting x velocities
-        [4*pos.shape[0]:5*pos.shape[0]]    starting y velocities
-        [5*pos.shape[0]:6*pos.shape[0]]    starting z velocities
-
-    times = tuple (t0, tf)
-        contains start and end time
+        [:masses.shape[0]]                    starting x positions
+        [masses.shape[0]:2*masses.shape[0]]   starting y positions
+        [2*masses.shape[0]:3*masses.shape[0]] starting x velocities
+        [3*masses.shape[0]:]                  starting y velocities
+    times = 1d array of floats
+        times at which we evaluate the function
     randomseed = int
         used to set RandomState which is relevant in setting spring
         and damper coefficients and setting the anchor mass
     """
 
-    def __init__(self, pos, masses, starts, times, randomseed = 12345):
+    def __init__(self, pos, mass, starts, times, randomseed = 12345):
         self.pos = pos
-        self.masses = masses
+        self.masses = mass
         self.starts = starts
         self.times = times
         self.random_seed = randomseed
@@ -46,12 +43,13 @@ class ThreeDimMSM:
 
         rand = np.random.RandomState object
         """
+        # this is what is actually needs to do:
         anchor_idx = rand.randint(0, self.pos.shape[0])
         self.masses[anchor_idx] = 1e15
 
         return self
 
-    def updateDistances(self, delta_x = 0.0, delta_y = 0.0, delta_z = 0.0):
+    def updateDistances(self, delta_x = 0.0, delta_y = 0.0):
         """
         Function to track distances for the forcing function
 
@@ -59,22 +57,19 @@ class ThreeDimMSM:
         ----------
         delta_x = 1-D array, changes in x in nm
         delta_y = 1-D array, changes in y in nm
-        delta_z = 1-D array, changes in z in nm
         """
-        self.pos[:,0] = self.pos[:,0] + delta_x
-        self.pos[:,1] = self.pos[:,1] + delta_y
-        self.pos[:,2] = self.pos[:,2] + delta_z
-        self.d_mat_ = distance_matrix(self.pos, self.pos)
+        self.pos[0,:] = self.pos[0,:] + delta_x
+        self.pos[1,:] = self.pos[1,:] + delta_y
+        self.d_mat_ = distance_matrix(self.pos.T, self.pos.T)
         return self
 
-    def allConnections(self, rand, k_mean = 3, k_sd = 1e-10,
-                                   c_mean = 6, c_sd = 1e-10):
+    def allConnections(self, rand, mean = 3, sd = 1e-10):
         """
         Set up spring and damper matrices, establishing all of the connections
         between masses in the model
         """
-        k_vals = rand.normal(k_mean, k_sd, size=(self.d_mat_.shape))
-        c_vals = rand.normal(c_mean, c_sd, size=(self.d_mat_.shape))
+        k_vals = rand.normal(loc=mean*(10), scale=sd, size=(self.d_mat_.shape))
+        c_vals = rand.normal(loc=mean*(20), scale=sd, size=(self.d_mat_.shape))
 
         self.kx_ = np.zeros(self.d_mat_.shape)
         self.ky_ = np.zeros(self.d_mat_.shape)
@@ -153,7 +148,7 @@ class ThreeDimMSM:
                     dir_y[i, j] = dir_y[i, j] * -1
 
         # make this coefficient matrix symmetrical
-        i_lower = np.tril_indices(self.d_mat_.shape[0], -1)
+        i_lower = np.tril_indices(self.d_mat_.shape[0])
         dir_x[i_lower] = dir_x.T[i_lower]
         dir_y[i_lower] = dir_y.T[i_lower]
 
