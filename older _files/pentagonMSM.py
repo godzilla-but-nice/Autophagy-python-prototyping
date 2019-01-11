@@ -10,14 +10,14 @@ y_pts = np.zeros(6)
 
 # these calculations are pentagon specific. They give me a pentagon inscribed
 # in a circle of radius 300 centered around the origin
-x_pts[1] = 300 * np.cos(np.pi/10.0)
-x_pts[2] = 300 * np.cos(0.942478)
+x_pts[1] = 150 * np.cos(np.pi/10.0)
+x_pts[2] = 200 * np.cos(0.942478)
 x_pts[3] = -x_pts[2]
 x_pts[4] = -x_pts[1]
 
-y_pts[0] = 300
-y_pts[1] = 300 * np.sin(np.pi/10.0)
-y_pts[2] = -300 * np.sin(0.942478)
+y_pts[0] = 200
+y_pts[1] = 350 * np.sin(np.pi/10.0)
+y_pts[2] = -200 * np.sin(0.942478)
 y_pts[3] = y_pts[2]
 y_pts[4] = y_pts[1]
 
@@ -47,8 +47,8 @@ anim_y = np.zeros(output[:, 6:12].shape)
 center_of_mass = np.zeros((output.shape[0], 2))
 
 for i in range(len(x_pts)):
-    anim_x[:, i] = output[:, i] + x_pts[i] #- initials[i]
-    anim_y[:, i] = output[:, 6+i] + y_pts[i] #- initials[6+i]
+    anim_x[:, i] = output[:, i] + x_pts[i]
+    anim_y[:, i] = output[:, 6+i] + y_pts[i]
     momentum = (output[:, 12+i]**2 + output[:, 18+i]**2)**0.5
 
 center_of_mass[:, 0] = np.sum(output[:, :6] * masses) / np.sum(masses)

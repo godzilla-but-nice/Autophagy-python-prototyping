@@ -1,18 +1,23 @@
 import numpy as np
+from scipy.integrate import odeint
+from scipy.spatial import distance_matrix
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 from numpy import inf
-from tqdm import tqdm
+import pdb
 
 class ThreeDimMSM:
     """
     This class contains functions for solving n-dimensional mass-spring systems.
-    It will set up coeffienct matrices for springs and dampers and use them to
+    It will determine which masses are interacting based on proximity,
+    set up coeffienct matrices for springs and dampers, and use them to
     evaluate the ODEs
 
     Parameters:
     -----------
     dat = 2d array of floats
         mass# by x, y, z position, describes the positions of the masses
-    pos = 1d array of floats
+    starts = 1d array of floats
         [:pos.shape[0]]                    starting x positions
         [pos.shape[0]:2*pos.shape[0]]      starting y positions
         [2*pos.shape[0]:3*pos.shape[0]]    starting z positions
@@ -21,28 +26,42 @@ class ThreeDimMSM:
         [5*pos.shape[0]:6*pos.shape[0]]    starting z velocities
     masses = 1d array of floats
         actual masses of the masses in the model
-    times = 1d array of floats
-        times at which to evaluate the model
-    k_mean = scalar
-        mean for normal distribution of spring stiffness
-    k_sd = scalar
-        standard deviation for normal distribution of spring stiffness
-    force_coeff = scalar
-        value for the numerator of the attractive force magnitude (over r**2)
-    random_seed = int
-        used to set RandomState for reproducability
+    times = tuple (t0, tf)
+        contains start and end time
+    randomseed = int
+        used to set RandomState which is relevant in setting spring
+        and damper coefficients and setting the anchor mass
     """
 
-    def __init__(self, pos, masses, times, k_mean = 4, k_sd = 2,
-                 force_coeff = 5e7, random_seed = None):
+    def __init__(self, pos, masses, starts, times, randomseed = 12345):
         self.orig_pos = pos
         self.pos = np.copy(self.orig_pos)
         self.masses = masses.reshape((masses.shape[0],))
+        self.starts = starts
         self.times = times
-        self.k_mean = k_mean
-        self.k_sd = k_sd
-        self.force_coeff = force_coeff
-        self.randomseed = random_seed
+        self.random_seed = randomseed
+        self.com_ = np.zeros((times.shape[0], 3))
+
+        CMx = np.sum(self.masses * self.pos[:,0])
+        CMy = np.sum(self.masses * self.pos[:,1])
+        CMz = np.sum(self.masses * self.pos[:,2])
+        tot_mass = np.sum(self.masses)
+
+        self.com_ = np.asarray([CMx/tot_mass, CMy/tot_mass, CMz/tot_mass])
+        self.updateDistances()
+
+    def setAnchor(self, rand):
+        """
+        Locks a single mass in place to prevent system migrations
+
+        Parameters:
+        ----------
+        rand = np.random.RandomState object
+        """
+        self.anchor_idx_ = rand.randint(0, self.pos.shape[0])
+        #self.masses[self.anchor_idx_] = 1e15
+
+        return self
 
     def updateDistances(self, delta_x = 0.0, delta_y = 0.0, delta_z = 0.0):
         """
@@ -57,9 +76,10 @@ class ThreeDimMSM:
         self.pos[:,0] = self.orig_pos[:,0] + delta_x
         self.pos[:,1] = self.orig_pos[:,1] + delta_y
         self.pos[:,2] = self.orig_pos[:,2] + delta_z
+        self.d_mat_ = distance_matrix(self.pos, self.pos)
         return self
 
-    def establishSprings(self, rand, max_dist = None):
+    def establishSprings(self, rand, k_mean = 3, k_sd = 1, max_dist = None):
         """
         Assign spring constants for the springs between masses in the system
         using a normal distribution. By default establishes springs connecting
@@ -71,11 +91,10 @@ class ThreeDimMSM:
         k_sd: scalar
             standard deviation for generation of spring constants
         max_dist: scalar
-            maximum distance threshhold for connected masses. If the masses are
-            initially within this distance threshold they will be connected by
-            springs
+            maximum distance threshhold for connected masses. closer to one
+            another than this value will be connected by springs
         """
-        k_vals = np.abs(rand.normal(loc=self.k_mean, scale=self.k_sd,
+        k_vals = np.abs(rand.normal(loc=k_mean, scale=k_sd,
                         size=((self.masses.shape[0], self.masses.shape[0]))))
         i_lower = np.tril_indices(k_vals.shape[0])
         k_vals[i_lower] = k_vals.T[i_lower]
@@ -101,6 +120,9 @@ class ThreeDimMSM:
         """
         Update the spring values to reflect the changing relative positions
         of the masses.
+
+        self.phi_: polar angle (radians)
+        self.theta_: azimuthal angle (radians)
         """
         # We want to find vectors between each body
         delta_x = np.subtract.outer(self.pos[:, 0], self.pos[:, 0])
@@ -150,34 +172,48 @@ class ThreeDimMSM:
 
         return self
 
-    def simpleAttraction(self, force_constant):
+    def pseudoAttraction(self):
         """
-        Attractive force between the masses which takes the form of:
+        Returns a foce vector that directs force toward the center of mass at
+        each time point
+        """
+        # find direction vectors to the center of mass from each body
+        offset_x = self.com_[0] - self.pos[:,0]
+        offset_y = self.com_[1] - self.pos[:,1]
+        offset_z = self.com_[2] - self.pos[:,2]
+        center_offset = np.vstack((offset_x, offset_y, offset_z))
+        center_dist = (center_offset[0,:]**2 + center_offset[1,:]**2
+                            + center_offset[2,:]**2)**0.5
 
-        k/r^2
+        # protect myself from division by zero
+        dist_zero = np.logical_and(center_dist < 1e-15, center_dist > -1e-15)
+        center_dist[dist_zero] = 1e3
 
-        where k is the force constant and r is the distance between two masses
-        in a pair. This force is split into cartesian components and each mass
-        is assigned a net force based on all of the components acting on it.
+        norm_x = offset_x / center_dist
+        norm_y = offset_y / center_dist
+        norm_z = offset_z / center_dist
 
-        Parameters:
-        -----------
-        force_constant = scalar
-            Determines the overall strength of the attractive forces
+        f_mag = 6e2 #/ center_dist**2
 
-        Return:
-        -------
-        forces = 2d array of floats (3, len(self.masses))
-            array that describes x, y and z, components of the net force acting
-            on each mass
+
+        fx = f_mag * norm_x
+        fy = f_mag * norm_y
+        fz = f_mag * norm_z
+        f = np.vstack((fx, fy, fz))
+
+        return f
+
+    def simpleAttraction(self, force_constant = 5e7):
+        """
+        Attractive force between the masses
         """
         # find offsets between every possible pair of bodies
         delta_x = np.subtract.outer(self.pos[:, 0], self.pos[:, 0])
         delta_y = np.subtract.outer(self.pos[:, 1], self.pos[:, 1])
         delta_z = np.subtract.outer(self.pos[:, 2], self.pos[:, 2])
 
-        #dist = distance_matrix(self.pos, self.pos)
-        dist = np.sqrt(delta_x**2 + delta_y**2 + delta_z**2)
+        dist = distance_matrix(self.pos, self.pos)
+        mag = np.sqrt(delta_x**2 + delta_y**2 + delta_z**2)
 
         # standardize these distances
         norm_dx = delta_x / dist
@@ -190,22 +226,63 @@ class ThreeDimMSM:
         norm_dy[diagonals] = 0
         norm_dz[diagonals] = 0
 
-        # find magnitude of force acting between each pair of bodies
         total_force = force_constant / dist**2
         total_force[total_force == inf] = 0
-
-        # find component forces between each pair of bodies according to magnitude
         fx_mat = norm_dx * total_force
         fy_mat = norm_dy * total_force
         fz_mat = norm_dz * total_force
 
-        # find net component forces
         fx = np.sum(fx_mat, axis=0)
         fy = np.sum(fy_mat, axis=0)
         fz = np.sum(fz_mat, axis=0)
         forces = np.vstack((fx, fy, fz))
 
+        # fig = plt.figure()
+        # ax = fig.add_subplot(111, projection = '3d')
+        # ax.scatter(self.pos[:,0], self.pos[:,1], self.pos[:,2])
+        # ax.scatter(self.com_[0], self.com_[1], self.com_[2], c='r', s=100)
+        # ax.quiver(self.pos[:,0], self.pos[:,1], self.pos[:,2],
+        #                             fx_mat, fy_mat, fz_mat, alpha=0.6)
+        # ax.set_xlim((-1059, 1059))
+        # ax.set_ylim((-1059, 1059))
+        # ax.set_zlim((-1059, 1059))
+        # ax.set_xlabel('x')
+        # ax.set_ylabel('y')
+        # ax.set_zlabel('z')
+        # plt.show()
+        # # print('com x: {0}, y: {1}, z:{2}'.format(round(self.com_[0],2),
+        # #                                          round(self.com_[1],2),
+        # #                                          round(self.com_[2],2)))
+        # pdb.set_trace()
+
         return forces
+
+    def oneForce(self):
+        """
+        returns a force vector of aprropriate length for ODE system with one
+        external force acting on a single body
+        """
+        f0 = np.zeros(self.pos.shape[0])
+        f1 = np.copy(f0)
+        f1[0] = 10000
+        return np.vstack((f1, f0, f0))
+
+    def zeroForce(self):
+        """
+        returns a force vector of aprropriate length for ODE system with zero
+        external force
+        """
+        f0 = np.zeros(self.pos.shape[0])
+
+        return np.vstack((f0, f0, f0))
+
+    def parallelForces(self):
+        """
+        Returns forces with a constant value for every dimension
+        """
+        f = np.ones(self.pos.shape[0]) * 3e2
+
+        return [f, f, f]
 
     def msmSys(self, init, t):
         """
@@ -223,10 +300,8 @@ class ThreeDimMSM:
 
         Parameters:
         -----------
-        init = 1-D array
-            positions and velocities before this iteration
-        t = scalar
-            time of evaluation
+        init = 1-D array, positions and velocities before this iteration
+        t = time of evaluation
         """
         n_mass = self.pos.shape[0]
 
@@ -238,7 +313,10 @@ class ThreeDimMSM:
         vy = init[4*n_mass:5*n_mass]
         vz = init[5*n_mass:]
 
-        force = self.simpleAttraction(self.force_coeff)
+        if t > 0:
+            force = self.simpleAttraction(6e7)
+        else:
+            force = self.zeroForce()
 
         ddx = (force[0] -
                (self.cx_ @ vx) -
@@ -250,45 +328,33 @@ class ThreeDimMSM:
                 (self.cz_ @ vz) -
                 (self.kz_ @ z)) / self.masses
 
+        # ddx[self.anchor_idx_] = 0.
+        # ddy[self.anchor_idx_] = 0.
+        # ddz[self.anchor_idx_] = 0.
+
         return np.hstack((vx, vy, vz, ddx, ddy, ddz))
 
-    def solveRK4(self, fun, t):
+    def solveRK2(self, fun, t):
         """
-        forth-order Runge-Kutta solver for systems of ODEs.
+        Second-order Runge-Kutta solver for systems of ODEs.
 
         Parameters
         ----------
-        fun = function(array of positions and velocities, scalar for time)
-            This is the function that contains our discretized ODEs
-        t = 1d array of floats
-            This contains our times where we would like to evaluate our ODEs.
-            assumes constant step size
 
-        Returns:
-        --------
-        offsets = 2d array of floats (len(t), 6 * len(self.masses))
-            for each mass this array contains x, y, and z offsets from the start
-            position and x, y, and z velocites at each time point.
         """
         step = t[1] - t[0]
         offsets = np.zeros((self.times.shape[0], 6*self.masses.shape[0]))
-        for time in tqdm(np.arange(self.times.shape[0])[1:]):
+        for time in np.arange(self.times.shape[0])[1:]:
             k1 = fun(offsets[time-1,:], self.times[time]) * step
             k2 = fun(offsets[time-1,:] + k1/2., self.times[time])/2 * step
-            k3 = fun(offsets[time-1,:] + k2/2., self.times[time])/2 * step
-            k4 = fun(offsets[time-1,:] + k3, self.times[time]) * step
-            offsets[time, :] = offsets[time-1, :] + k1/6 + k2/3 + k3/3 + k4/6
+            offsets[time, :] = offsets[time-1, :] + k2
             self.updateDistances(offsets[time, :self.masses.shape[0]])
             self.updateSprings()
 
-        return offsets
+        return offsets, self.com_
 
-    def runRK4(self):
-        """
-        The only non initialization function we call in our script. This
-        function establishes the springs and runs the simulation using a
-        forth-order Runge-Kutta solver.
-        """
+    def runRK2(self):
         rng = np.random.RandomState()
         self.establishSprings(rng)
-        return self.solveRK4(self.msmSys, self.times)
+        self.setAnchor(rng)
+        return self.solveRK2(self.msmSys, self.times)
